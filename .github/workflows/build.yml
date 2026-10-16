@@ -1,0 +1,75 @@
+name: Build Placebo EQ
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (VST3)
+            os: windows-latest
+            artifact: PlaceboEQ-Windows-VST3
+          - name: macOS (VST3 + AU, Universal)
+            os: macos-latest
+            artifact: PlaceboEQ-macOS-VST3-AU
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Trova il progetto
+        run: |
+          CM="$(find . -name CMakeLists.txt -not -path './build/*' -not -path '*/build/*' | awk '{ print length, $0 }' | sort -n | head -n 1 | cut -d' ' -f2-)"
+          if [ -z "$CM" ]; then
+            echo "CMakeLists.txt non trovato nel repository"
+            exit 1
+          fi
+          PROJ="$(dirname "$CM")"
+          echo "Progetto trovato in: $PROJ"
+          echo "PROJ=$PROJ" >> "$GITHUB_ENV"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd "$PROJ"
+          cmake -B build -A x64
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cd "$PROJ"
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13
+
+      - name: Build
+        run: |
+          cd "$PROJ"
+          cmake --build build --config Release --parallel 4
+
+      - name: Package
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          ART="$PROJ/build/PlaceboEQ_artefacts/Release"
+          cp -R "$ART/VST3/PlaceboEQ.vst3" "$GITHUB_WORKSPACE/dist/"
+          if [ "$RUNNER_OS" == "macOS" ]; then
+            cp -R "$ART/AU/PlaceboEQ.component" "$GITHUB_WORKSPACE/dist/"
+            codesign --force --deep --sign - "$GITHUB_WORKSPACE/dist/PlaceboEQ.vst3"
+            codesign --force --deep --sign - "$GITHUB_WORKSPACE/dist/PlaceboEQ.component"
+          fi
+          ls -la "$GITHUB_WORKSPACE/dist"
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
